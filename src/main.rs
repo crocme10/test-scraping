@@ -1,9 +1,8 @@
-// use select::predicate::Name;
-
-use log::{error, trace};
+use clap::{App, Arg, ArgMatches, SubCommand};
+use log::{error, trace, warn};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Error, ErrorKind, Write};
 use tokio::fs;
 
@@ -17,7 +16,41 @@ pub struct Character {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     pretty_env_logger::init();
+    let matches = App::new("Searching Star Wars Characters with Elasticsearch")
+        .version("0.1")
+        .author("Matthieu Paindavoine <matt@area403.org>")
+        .subcommand(
+            SubCommand::with_name("index")
+                .about("Scrap data and index them in Elasticsearch")
+                .version("0.1")
+                .author("Matthieu Paindavoine <matt@area403.org>"),
+        )
+        .subcommand(SubCommand::with_name("init").about("Initialize Elasticsearch"))
+        .subcommand(
+            SubCommand::with_name("search").about("Search").arg(
+                Arg::with_name("query")
+                    .value_name("FEATURE")
+                    .help("Feature to search for"),
+            ),
+        )
+        .get_matches();
 
+    match matches.subcommand() {
+        ("index", Some(sm)) => index(sm).await,
+        ("init", Some(sm)) => init(sm).await,
+        ("search", Some(sm)) => search(sm).await,
+        _ => {
+            warn!("Unrecognized subcommand");
+            Err(String::from("foo").into())
+            // Err(Box::new(Error::new(
+            //     ErrorKind::Other,
+            //     "Unrecognized subcommand",
+            // )))
+        }
+    }
+}
+
+async fn index<'a>(_matches: &ArgMatches<'a>) -> Result<(), Box<dyn std::error::Error>> {
     create_index("starwars").await?;
 
     generate_dataset("https://en.wikipedia.org/wiki/List_of_Star_Wars_characters").await?;
@@ -25,6 +58,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     generate_bulk_input("starwars").await?;
 
     import_bulk_input("starwars").await?;
+
+    Ok(())
+}
+
+async fn init<'a>(_matches: &ArgMatches<'a>) -> Result<(), Box<dyn std::error::Error>> {
+    Ok(())
+}
+
+async fn search<'a>(matches: &ArgMatches<'a>) -> Result<(), Box<dyn std::error::Error>> {
+    let query = matches.value_of("query").expect("Query parameter");
+
+    let res = search_query("starwars", query).await?;
+
+    println!("{}", res.to_string());
 
     Ok(())
 }
@@ -160,4 +207,42 @@ async fn import_bulk_input(name: &str) -> Result<(), Box<dyn std::error::Error>>
             format!("Bulk import {} failure: status {}", name, resp_status),
         )))
     }
+}
+
+async fn search_query(name: &str, query: &str) -> Result<Value, Box<dyn std::error::Error>> {
+    let endpoint = format!("http://localhost:9200/{}/_search", name);
+    trace!("Searching endpoint {}", endpoint);
+    let json = build_query(query)?;
+    let client = reqwest::Client::new();
+    let resp = client.get(&endpoint).json(&json).send().await?;
+    if resp.status().is_success() {
+        trace!("Dataset successfulyl searched");
+        let ret = resp.json::<Value>().await?;
+        Ok(ret)
+    } else {
+        let resp_status = String::from(resp.status().as_str());
+        let resp_msg = resp.text().await.expect("Response");
+        error!(
+            "Dataset search failed with status {}: {}",
+            resp_status, resp_msg
+        );
+        Err(Box::new(Error::new(
+            ErrorKind::Other,
+            format!("Dataset search failed: status {}: {}", name, resp_status),
+        )))
+    }
+}
+fn build_query(query: &str) -> Result<Value, Box<dyn std::error::Error>> {
+    let json = json!({
+        "query": {
+            "multi_match": {
+                "query": query,
+                "fields": [
+                    "name^10",
+                    "description"
+                ]
+            }
+        }
+    });
+    Ok(json)
 }
