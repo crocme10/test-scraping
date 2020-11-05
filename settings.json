@@ -1,0 +1,15 @@
+{
+  "settings": {
+    "index": {
+      "number_of_shards": 2,
+      "number_of_replicas": 1
+    }
+  },
+  "mappings": {
+    "properties": {
+      "name": { "type": "keyword" },
+      "portrayal": { "type": "text" },
+      "description": { "type": "text" }
+    }
+  }
+}
